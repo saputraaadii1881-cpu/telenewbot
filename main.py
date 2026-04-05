@@ -1,20 +1,12 @@
-import os
-import sqlite3
-from datetime import datetime
-
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+import sqlite3
+import os
 
-# ================= ENV =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# ================= DB =================
+# ================= DATABASE =================
 conn = sqlite3.connect("data.db", check_same_thread=False)
 c = conn.cursor()
 
@@ -33,174 +25,206 @@ CREATE TABLE IF NOT EXISTS orders (
     user_id INTEGER,
     product_id INTEGER,
     qty INTEGER,
-    total INTEGER,
-    date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    total INTEGER
 )
 """)
 
 conn.commit()
 
-# ================= KEYBOARD =================
-def main_menu():
+# ================= MENU =================
+async def main_menu_text():
+    return "Menu Utama"
+
+def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📦 PRODUK", callback_data="produk")],
-        [InlineKeyboardButton("📜 HISTORY", callback_data="history")],
-        [InlineKeyboardButton("📖 PANDUAN", callback_data="panduan")],
-        [InlineKeyboardButton("🛡️ GARANSI", callback_data="garansi")],
-    ])
-
-def back_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Kembali", callback_data="menu")]
-    ])
-
-def admin_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 TRANSAKSI", callback_data="admin_transaksi")],
-        [InlineKeyboardButton("📦 ITEM", callback_data="admin_item")],
-        [InlineKeyboardButton("🔙 Kembali", callback_data="menu")],
+        [InlineKeyboardButton("📜 HISTORY ORDER", callback_data="history")],
+        [InlineKeyboardButton("📖 PANDUAN ORDER", callback_data="panduan")],
+        [InlineKeyboardButton("🛡️ CLAIM GARANSI", callback_data="garansi")]
     ])
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📌 MENU UTAMA", reply_markup=main_menu())
+    await update.message.reply_text(
+        await main_menu_text(),
+        reply_markup=main_menu_keyboard()
+    )
 
 # ================= PRODUK =================
-async def show_produk(query):
+async def produk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
     rows = c.execute("SELECT * FROM products").fetchall()
 
-    if not rows:
-        await query.edit_message_text("Belum ada produk", reply_markup=back_menu())
-        return
-
-    buttons = []
+    keyboard = []
     for r in rows:
-        buttons.append([InlineKeyboardButton(f"{r[1]} | stok: {r[2]}", callback_data=f"item_{r[0]}")])
+        keyboard.append([
+            InlineKeyboardButton(f"{r[1]} | Stok: {r[2]}", callback_data=f"item_{r[0]}")
+        ])
 
-    buttons.append([InlineKeyboardButton("🔙 Kembali", callback_data="menu")])
+    keyboard.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_menu")])
 
-    await query.edit_message_text("📦 PRODUK", reply_markup=InlineKeyboardMarkup(buttons))
+    await query.edit_message_text(
+        "📦 Daftar Produk",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-# ================= ITEM =================
-async def show_item(query, pid):
+# ================= DETAIL ITEM =================
+async def item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    pid = int(query.data.split("_")[1])
     r = c.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
 
-    if not r:
-        await query.edit_message_text("Produk tidak ditemukan", reply_markup=back_menu())
-        return
+    text = f"""
+📦 {r[1]}
+💰 Harga: {r[3]}
+📦 Stok: {r[2]}
+"""
 
-    buttons = [
-        [InlineKeyboardButton("🛒 BELI", callback_data=f"buy_{pid}")],
+    keyboard = [
+        [InlineKeyboardButton("BELI", callback_data=f"buy_{pid}")],
         [InlineKeyboardButton("🔙 Kembali", callback_data="produk")]
     ]
 
-    await query.edit_message_text(
-        f"📦 {r[1]}\n💰 Harga: {r[3]}\n📊 Stok: {r[2]}",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ================= BELI =================
-async def buy(query, pid):
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    pid = int(query.data.split("_")[1])
     r = c.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
 
-    if not r or r[2] <= 0:
-        await query.edit_message_text("❌ Stok habis", reply_markup=back_menu())
+    if r[2] <= 0:
+        await query.edit_message_text(
+            "❌ Stok habis",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Kembali", callback_data="produk")]
+            ])
+        )
         return
 
     c.execute("UPDATE products SET stock = stock - 1 WHERE id=?", (pid,))
-    c.execute(
-        "INSERT INTO orders (user_id, product_id, qty, total) VALUES (?, ?, ?, ?)",
-        (query.from_user.id, pid, 1, r[3]),
-    )
+    c.execute("INSERT INTO orders (user_id, product_id, qty, total) VALUES (?, ?, ?, ?)",
+              (query.from_user.id, pid, 1, r[3]))
     conn.commit()
 
-    await query.edit_message_text("✅ Pembelian berhasil", reply_markup=back_menu())
+    await query.edit_message_text(
+        "✅ Berhasil beli",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Kembali", callback_data="produk")]
+        ])
+    )
 
 # ================= HISTORY =================
-async def show_history(query):
-    rows = c.execute(
-        "SELECT * FROM orders WHERE user_id=?", (query.from_user.id,)
-    ).fetchall()
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    text = "📜 HISTORY:\n"
+    rows = c.execute("SELECT * FROM orders WHERE user_id=?", (query.from_user.id,)).fetchall()
+
     if not rows:
-        text += "Belum ada transaksi"
+        text = "Belum ada order"
     else:
+        text = "📜 History:\n"
         for r in rows:
-            text += f"\n#{r[0]} | qty: {r[3]} | total: {r[4]}"
+            text += f"Order {r[0]} | Qty {r[3]} | Total {r[4]}\n"
 
-    await query.edit_message_text(text, reply_markup=back_menu())
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Kembali", callback_data="back_menu")]
+        ])
+    )
+
+# ================= PANDUAN =================
+async def panduan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "📖 Cara order:\n1. Pilih produk\n2. Klik beli",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Kembali", callback_data="back_menu")]
+        ])
+    )
+
+# ================= GARANSI =================
+async def garansi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "🛡️ Hubungi admin untuk claim",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Kembali", callback_data="back_menu")]
+        ])
+    )
 
 # ================= ADMIN =================
-async def admin_panel(query):
-    if query.from_user.id != ADMIN_ID:
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
         return
 
-    await query.edit_message_text("🛠 ADMIN PANEL", reply_markup=admin_menu())
-
-# ================= TRANSAKSI =================
-async def transaksi(query):
-    today = datetime.now().strftime("%Y-%m-%d")
-    month = datetime.now().strftime("%Y-%m")
-
-    harian = c.execute("SELECT SUM(total) FROM orders WHERE date LIKE ?", (f"{today}%",)).fetchone()[0] or 0
-    bulanan = c.execute("SELECT SUM(total) FROM orders WHERE date LIKE ?", (f"{month}%",)).fetchone()[0] or 0
-
-    await query.edit_message_text(
-        f"💰 TRANSAKSI\n\nHarian: {harian}\nBulanan: {bulanan}",
-        reply_markup=back_menu()
+    await update.message.reply_text(
+        "Admin aktif\nGunakan:\n/add nama stok harga"
     )
 
-# ================= ITEM ADMIN =================
-async def admin_item(query):
-    await query.edit_message_text(
-        "📦 ITEM ADMIN (dummy UI)\n\nTambah/Edit stok via DB/manual",
-        reply_markup=back_menu()
-    )
+# ================= ADD ITEM =================
+async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
 
-# ================= CALLBACK =================
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    data = q.data
-    await q.answer()
+    try:
+        name = context.args[0]
+        stock = int(context.args[1])
+        price = int(context.args[2])
 
-    if data == "menu":
-        await q.edit_message_text("📌 MENU UTAMA", reply_markup=main_menu())
+        c.execute("INSERT INTO products (name, stock, price) VALUES (?, ?, ?)",
+                  (name, stock, price))
+        conn.commit()
 
-    elif data == "produk":
-        await show_produk(q)
+        await update.message.reply_text("✅ Item ditambahkan")
 
+    except:
+        await update.message.reply_text("Format: /add nama stok harga")
+
+# ================= BUTTON =================
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = update.callback_query.data
+
+    if data == "produk":
+        await produk(update, context)
     elif data.startswith("item_"):
-        await show_item(q, int(data.split("_")[1]))
-
+        await item(update, context)
     elif data.startswith("buy_"):
-        await buy(q, int(data.split("_")[1]))
-
+        await buy(update, context)
     elif data == "history":
-        await show_history(q)
-
+        await history(update, context)
     elif data == "panduan":
-        await q.edit_message_text("📖 Panduan: pilih produk lalu klik beli", reply_markup=back_menu())
-
+        await panduan(update, context)
     elif data == "garansi":
-        await q.edit_message_text("🛡️ Hubungi admin jika ada masalah", reply_markup=back_menu())
-
-    # ADMIN
-    elif data == "admin":
-        await admin_panel(q)
-
-    elif data == "admin_transaksi":
-        await transaksi(q)
-
-    elif data == "admin_item":
-        await admin_item(q)
+        await garansi(update, context)
+    elif data == "back_menu":
+        await update.callback_query.edit_message_text(
+            await main_menu_text(),
+            reply_markup=main_menu_keyboard()
+        )
 
 # ================= RUN =================
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("admin", admin_panel))
-app.add_handler(CallbackQueryHandler(callback))
+app.add_handler(CommandHandler("admin", admin))
+app.add_handler(CommandHandler("add", add))
+app.add_handler(CallbackQueryHandler(button))
+app.add_handler(CommandHandler("addstock", addstock))
+app.add_handler(CommandHandler("setstock", setstock))
+app.add_handler(CommandHandler("del", delete))
 
 print("BOT RUNNING...")
 app.run_polling()
